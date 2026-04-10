@@ -1,0 +1,59 @@
+# KakaoChat AI Server Configuration
+# API key는 환경변수로 관리: GEMINI_API_KEY, OPENAI_API_KEY 등
+
+server:
+  host: "0.0.0.0"
+  port: 8765
+  ws_path: "/ws"
+  auth_token: ""  # 외부 노출 시 Bearer token 설정
+
+response_mode: "passive"  # active / passive / off
+
+llm:
+  model: "gemini/gemini-2.0-flash"  # litellm 포맷 (gemini/, openai/ 등)
+  temperature: 0.7
+  max_tokens: 1024
+
+memory:
+  provider: "mem0"  # mem0
+  vector_db: "chromadb"
+  collection_name: "kakaochat"
+  embedding_model: "intfloat/multilingual-e5-large"
+
+curator:
+  noise_patterns:
+    - "^[ㅋㅎㅠㅜ]+$"
+    - "^[ㄱ-ㅎ]+$"
+    - "^이모티콘$"
+  signal_keywords:
+    - "TIL"
+    - "몰랐네"
+    - "신기하다"
+    - "꿀팁"
+  min_signal_length: 100  # 시그널 후보 최소 글자수
+
+participation:
+  rate_limit:
+    per_minute: 1
+    consecutive_max: 3
+    cooldown_seconds: 300  # 연속 3회 후 5분 쿨다운
+  similarity_threshold:
+    duplicate: 0.9
+    related: 0.85
+
+expert_tagging:
+  min_signal_score: 5  # 전문가 자격 최소 누적 시그널 점수
+  enable_mentions: true  # LLM 응답에 전문가 추천 포함
+
+digest:
+  enabled: true
+  schedule: "0 8 * * 1"  # 매주 월요일 08:00 KST
+  timezone: "Asia/Seoul"
+  min_signals: 3  # 최소 시그널 수 (부족하면 스킵)
+  max_signals: 50  # LLM에 전달할 최대 시그널 수
+
+target_rooms: []  # 화이트리스트, 비어있으면 모든 방
+
+logging:
+  level: "INFO"
+  raw_log_file: "logs/raw_messages.jsonl"  # 모든 raw 메시지 보관

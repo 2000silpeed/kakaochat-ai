@@ -175,11 +175,17 @@ async def _call_llm(
     room: str, sender: str, text: str, memory_context: str, trigger: str,
     expert: str | None = None,
 ) -> str | None:
-    """Gemini/OpenAI LLM 호출."""
+    """LLM 호출 (Gemini/OpenAI/Claude Session)."""
     cfg = get_config()
     model = cfg["llm"]["model"]
-    api_key = get_llm_api_key()
 
+    # Claude Code 세션 모드
+    if model.startswith("claude/"):
+        return await _call_claude_session(
+            room, sender, text, memory_context, trigger, expert
+        )
+
+    api_key = get_llm_api_key()
     if not api_key:
         logger.error("LLM API key not set")
         return None
@@ -216,6 +222,29 @@ async def _call_llm(
     else:
         logger.error(f"Unsupported LLM model: {model}")
         return None
+
+
+async def _call_claude_session(
+    room: str, sender: str, text: str, memory_context: str,
+    trigger: str, expert: str | None = None,
+) -> str | None:
+    """Claude Code 세션을 통한 응답 생성."""
+    from app.claude_session import get_session
+
+    context_parts = []
+    if memory_context:
+        context_parts.append(f"관련 기억:\n{memory_context}")
+    if trigger == "mention":
+        context_parts.append("(너에게 직접 물어본 거야. 답변해줘.)")
+    elif trigger == "question":
+        context_parts.append("(방에서 나온 질문이야. 기억에 있으면 답해줘.)")
+    if expert:
+        context_parts.append(f"(이 주제의 전문가: {expert}님. 답변 끝에 '{expert}님이 더 잘 아실 수 있어요'라고 추천해줘.)")
+
+    context = "\n".join(context_parts)
+
+    session = await get_session(room)
+    return await session.send_message(sender, text, context)
 
 
 async def _call_gemini(model: str, messages: list, api_key: str, cfg: dict) -> str | None:

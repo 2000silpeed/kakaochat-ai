@@ -10,9 +10,12 @@ server:
 response_mode: "passive"  # active / passive / off
 
 llm:
-  model: "gemini/gemini-2.0-flash"  # litellm 포맷 (gemini/, openai/ 등)
+  model: "gemini/gemini-2.0-flash"  # gemini/, openai/, claude/session
   temperature: 0.7
   max_tokens: 1024
+  claude:  # claude/session 모드 설정
+    model: "sonnet"  # sonnet, opus, haiku
+    max_concurrent_sessions: 3  # 동시 세션 수 제한
 
 memory:
   provider: "mem0"  # mem0

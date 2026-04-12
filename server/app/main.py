@@ -119,8 +119,40 @@ async def process_messages():
                     except Exception:
                         logger.exception("Digest signal recording failed (non-fatal)")
 
-            # Phase 3: 참여 엔진
-            if cfg["response_mode"] == "active":
+            # /clear 명령 처리 (Claude 세션 모드)
+            if msg.text.strip().startswith("/clear"):
+                if cfg["llm"]["model"].startswith("claude/"):
+                    try:
+                        from app.claude_session import clear_session
+                        cleared = await clear_session(msg.room)
+                        if cleared:
+                            await _broadcast_response(msg.room, "세션이 초기화되었습니다.")
+                            logger.info(f"Session cleared for '{msg.room}'")
+                    except Exception:
+                        logger.exception("Session clear failed")
+                continue
+
+            # Claude 세션 모드: 모든 non-noise 메시지를 세션에 피드
+            if cfg["llm"]["model"].startswith("claude/") and cfg["response_mode"] == "active":
+                try:
+                    from app.claude_session import get_session
+                    session = await get_session(msg.room)
+                    if curated.msg_type != MessageType.NOISE:
+                        from app.participation import classify_trigger, detect_mention
+                        trigger = classify_trigger(msg.text, msg.sender)
+                        if trigger:
+                            from app.participation import generate_response, _record_response, _check_rate_limit
+                            if _check_rate_limit():
+                                response_text = await generate_response(
+                                    msg.room, msg.sender, msg.text, trigger
+                                )
+                                if response_text:
+                                    await _broadcast_response(msg.room, response_text)
+                except Exception:
+                    logger.exception("Claude session failed (staying silent)")
+
+            # Phase 3: 참여 엔진 (non-Claude 모드)
+            elif cfg["response_mode"] == "active":
                 try:
                     from app.participation import classify_trigger, generate_response, reset_consecutive
 
@@ -221,6 +253,10 @@ async def lifespan(app: FastAPI):
     task.cancel()
     if _scheduler:
         _scheduler.shutdown(wait=False)
+    # Claude 세션 정리
+    if cfg["llm"]["model"].startswith("claude/"):
+        from app.claude_session import stop_all_sessions
+        await stop_all_sessions()
     logger.info("Server shutting down")
 
 
@@ -238,6 +274,23 @@ async def health():
         total_messages_received=total_messages_received,
         digest_enabled=cfg.get("digest", {}).get("enabled", False),
     )
+
+
+@app.get("/sessions")
+async def list_sessions():
+    """Claude 세션 상태 조회."""
+    from app.claude_session import get_all_status
+    return {"status": "ok", "sessions": get_all_status()}
+
+
+@app.post("/clear/{room}")
+async def api_clear_session(room: str):
+    """세션 초기화 API."""
+    from app.claude_session import clear_session
+    cleared = await clear_session(room)
+    if cleared:
+        return {"status": "ok", "room": room}
+    return {"status": "not_found", "room": room}
 
 
 @app.post("/digest/{room}")

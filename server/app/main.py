@@ -10,6 +10,7 @@ from starlette.websockets import WebSocketState
 
 from app.config import get_config, load_config
 from app.models import ChatMessage, ServerStatus
+from app.room_registry import get_registry
 
 _scheduler = None
 
@@ -69,6 +70,15 @@ async def process_messages():
 
             logger.info(f"[{msg.room}] {msg.sender}: {msg.text[:80]}")
 
+            # v0.5: Room Registry에 메시지 기록
+            registry = get_registry()
+            registry.record_message(msg.room)
+
+            # v0.5: per-room response_mode 체크
+            room_cfg = registry.get_effective_config(msg.room)
+            effective_mode = room_cfg.get("response_mode", cfg.get("response_mode", "passive"))
+            effective_model = room_cfg.get("llm_model", cfg["llm"]["model"])
+
             # Phase 4: 큐레이터 분류 → 노이즈가 아닌 것만 Mem0 저장
             from app.curator import classify, MessageType
             curated = classify(msg.room, msg.sender, msg.text, msg.ts)
@@ -121,7 +131,7 @@ async def process_messages():
 
             # /clear 명령 처리 (Claude 세션 모드)
             if msg.text.strip().startswith("/clear"):
-                if cfg["llm"]["model"].startswith("claude/"):
+                if effective_model.startswith("claude/"):
                     try:
                         from app.claude_session import clear_session
                         cleared = await clear_session(msg.room)
@@ -133,7 +143,7 @@ async def process_messages():
                 continue
 
             # Claude 세션 모드: 모든 non-noise 메시지를 세션에 피드
-            if cfg["llm"]["model"].startswith("claude/") and cfg["response_mode"] == "active":
+            if effective_model.startswith("claude/") and effective_mode == "active":
                 try:
                     from app.claude_session import get_session
                     session = await get_session(msg.room)
@@ -141,30 +151,34 @@ async def process_messages():
                         from app.participation import classify_trigger, detect_mention
                         trigger = classify_trigger(msg.text, msg.sender)
                         if trigger:
-                            from app.participation import generate_response, _record_response, _check_rate_limit
-                            if _check_rate_limit():
+                            from app.participation import generate_response, _check_rate_limit
+                            if _check_rate_limit(msg.room):
                                 response_text = await generate_response(
-                                    msg.room, msg.sender, msg.text, trigger
+                                    msg.room, msg.sender, msg.text, trigger,
+                                    effective_model=effective_model,
                                 )
                                 if response_text:
                                     await _broadcast_response(msg.room, response_text)
+                                    registry.record_response(msg.room)
                 except Exception:
                     logger.exception("Claude session failed (staying silent)")
 
             # Phase 3: 참여 엔진 (non-Claude 모드)
-            elif cfg["response_mode"] == "active":
+            elif effective_mode == "active":
                 try:
                     from app.participation import classify_trigger, generate_response, reset_consecutive
 
                     trigger = classify_trigger(msg.text, msg.sender)
                     if trigger:
                         response_text = await generate_response(
-                            msg.room, msg.sender, msg.text, trigger
+                            msg.room, msg.sender, msg.text, trigger,
+                            effective_model=effective_model,
                         )
                         if response_text:
                             await _broadcast_response(msg.room, response_text)
+                            registry.record_response(msg.room)
                     else:
-                        reset_consecutive()
+                        reset_consecutive(msg.room)
                 except Exception:
                     logger.exception("Participation engine failed (staying silent)")
 
@@ -253,10 +267,9 @@ async def lifespan(app: FastAPI):
     task.cancel()
     if _scheduler:
         _scheduler.shutdown(wait=False)
-    # Claude 세션 정리
-    if cfg["llm"]["model"].startswith("claude/"):
-        from app.claude_session import stop_all_sessions
-        await stop_all_sessions()
+    # Claude 세션 정리 (per-room 모델 오버라이드로 인해 항상 정리)
+    from app.claude_session import stop_all_sessions
+    await stop_all_sessions()
     logger.info("Server shutting down")
 
 
@@ -267,13 +280,15 @@ app = FastAPI(title="KakaoChat AI Server", lifespan=lifespan)
 @app.get("/health")
 async def health():
     cfg = get_config()
-    return ServerStatus(
-        status="ok",
-        response_mode=cfg["response_mode"],
-        connected_clients=len(connected_clients),
-        total_messages_received=total_messages_received,
-        digest_enabled=cfg.get("digest", {}).get("enabled", False),
-    )
+    registry = get_registry()
+    return {
+        "status": "ok",
+        "response_mode": cfg["response_mode"],
+        "connected_clients": len(connected_clients),
+        "total_messages_received": total_messages_received,
+        "active_rooms": registry.active_count,
+        "digest_enabled": cfg.get("digest", {}).get("enabled", False),
+    }
 
 
 @app.post("/auth/register")
@@ -326,6 +341,61 @@ async def api_clear_session(room: str):
     if cleared:
         return {"status": "ok", "room": room}
     return {"status": "not_found", "room": room}
+
+
+# --- v0.5: Room 관리 API ---
+@app.get("/rooms")
+async def list_rooms():
+    """활성 방 목록 + 통계."""
+    registry = get_registry()
+    return {"status": "ok", "rooms": registry.list_rooms()}
+
+
+@app.get("/rooms/{room}")
+async def get_room(room: str):
+    """개별 방 상태 조회."""
+    registry = get_registry()
+    entry = registry.get(room)
+    if not entry:
+        return {"status": "not_found", "room": room}
+    return {
+        "status": "ok",
+        "room": room,
+        "stats": {
+            "message_count": entry.stats.message_count,
+            "response_count": entry.stats.response_count,
+            "first_seen": entry.stats.first_seen,
+            "last_active": entry.stats.last_active,
+        },
+        "effective_config": registry.get_effective_config(room),
+    }
+
+
+@app.patch("/rooms/{room}")
+async def update_room_config(room: str, data: dict):
+    """방별 설정 오버라이드 (response_mode, llm_model)."""
+    registry = get_registry()
+    allowed_keys = {"response_mode", "llm_model"}
+    overrides = {k: v for k, v in data.items() if k in allowed_keys}
+    if not overrides:
+        return {"status": "error", "message": f"Allowed keys: {allowed_keys}"}
+
+    old_cfg = registry.get_effective_config(room)
+    registry.update_room_config(room, overrides)
+    new_cfg = registry.get_effective_config(room)
+
+    # Claude 모드에서 벗어나면 기존 세션 정리
+    old_is_claude = old_cfg.get("llm_model", "").startswith("claude/") and old_cfg.get("response_mode") == "active"
+    new_is_claude = new_cfg.get("llm_model", "").startswith("claude/") and new_cfg.get("response_mode") == "active"
+    if old_is_claude and not new_is_claude:
+        from app.claude_session import clear_session
+        await clear_session(room)
+
+    return {
+        "status": "ok",
+        "room": room,
+        "effective_config": new_cfg,
+    }
 
 
 @app.post("/digest/{room}")

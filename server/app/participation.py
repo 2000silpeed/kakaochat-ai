@@ -3,6 +3,9 @@ import logging
 import re
 import time
 from collections import deque
+from dataclasses import dataclass, field
+
+import os
 
 from app.config import get_config, get_llm_api_key
 from app.duplicate import check_duplicate, format_duplicate_response
@@ -11,55 +14,63 @@ from app.memory import search_memory
 
 logger = logging.getLogger("kakaochat.participation")
 
-# --- 빈도 제한 상태 ---
-_response_timestamps: deque[float] = deque()  # 최근 응답 시각
-_consecutive_count: int = 0
-_cooldown_until: float = 0.0
+
+# --- Per-room 빈도 제한 ---
+@dataclass
+class RoomRateState:
+    response_timestamps: deque = field(default_factory=deque)
+    consecutive_count: int = 0
+    cooldown_until: float = 0.0
 
 
-def _check_rate_limit() -> bool:
-    """빈도 제한 체크. 응답 가능하면 True."""
-    global _consecutive_count, _cooldown_until
+_room_rate_states: dict[str, RoomRateState] = {}
 
+
+def _get_rate_state(room: str) -> RoomRateState:
+    if room not in _room_rate_states:
+        _room_rate_states[room] = RoomRateState()
+    return _room_rate_states[room]
+
+
+def _check_rate_limit(room: str) -> bool:
+    """Per-room 빈도 제한 체크. 응답 가능하면 True."""
+    state = _get_rate_state(room)
     cfg = get_config()
     rl = cfg["participation"]["rate_limit"]
     now = time.time()
 
-    # 쿨다운 중
-    if now < _cooldown_until:
-        logger.debug(f"Cooldown active until {_cooldown_until:.0f}")
+    if now < state.cooldown_until:
+        logger.debug(f"[{room}] Cooldown active until {state.cooldown_until:.0f}")
         return False
 
-    # 분당 제한
-    while _response_timestamps and now - _response_timestamps[0] > 60:
-        _response_timestamps.popleft()
-    if len(_response_timestamps) >= rl["per_minute"]:
-        logger.debug("Rate limit: per_minute exceeded")
+    while state.response_timestamps and now - state.response_timestamps[0] > 60:
+        state.response_timestamps.popleft()
+    if len(state.response_timestamps) >= rl["per_minute"]:
+        logger.debug(f"[{room}] Rate limit: per_minute exceeded")
         return False
 
     return True
 
 
-def _record_response():
-    """응답 기록 → 빈도 제한 업데이트."""
-    global _consecutive_count, _cooldown_until
-
+def _record_response(room: str):
+    """Per-room 응답 기록 → 빈도 제한 업데이트."""
+    state = _get_rate_state(room)
     cfg = get_config()
     rl = cfg["participation"]["rate_limit"]
 
-    _response_timestamps.append(time.time())
-    _consecutive_count += 1
+    state.response_timestamps.append(time.time())
+    state.consecutive_count += 1
 
-    if _consecutive_count >= rl["consecutive_max"]:
-        _cooldown_until = time.time() + rl["cooldown_seconds"]
-        _consecutive_count = 0
-        logger.info(f"Cooldown activated for {rl['cooldown_seconds']}s")
+    if state.consecutive_count >= rl["consecutive_max"]:
+        state.cooldown_until = time.time() + rl["cooldown_seconds"]
+        state.consecutive_count = 0
+        logger.info(f"[{room}] Cooldown activated for {rl['cooldown_seconds']}s")
 
 
-def reset_consecutive():
-    """다른 사람이 말하면 연속 카운트 리셋."""
-    global _consecutive_count
-    _consecutive_count = 0
+def reset_consecutive(room: str):
+    """다른 사람이 말하면 해당 방의 연속 카운트 리셋."""
+    state = _get_rate_state(room)
+    state.consecutive_count = 0
 
 
 # --- 트리거 감지 ---
@@ -112,14 +123,24 @@ def classify_trigger(text: str, sender: str) -> str | None:
     return None
 
 
+def _resolve_api_key(model: str) -> str:
+    """모델 prefix에 따라 올바른 API 키 반환."""
+    if model.startswith("gemini/"):
+        return os.environ.get("GEMINI_API_KEY", "")
+    if model.startswith("openai/"):
+        return os.environ.get("OPENAI_API_KEY", "")
+    return os.environ.get("LLM_API_KEY", "")
+
+
 # --- LLM 응답 생성 ---
 async def generate_response(
-    room: str, sender: str, text: str, trigger: str
+    room: str, sender: str, text: str, trigger: str,
+    effective_model: str | None = None,
 ) -> str | None:
     """메모리 검색 + LLM으로 응답 생성. 실패 시 None (침묵)."""
     try:
-        if not _check_rate_limit():
-            logger.info("Rate limited, staying silent")
+        if not _check_rate_limit(room):
+            logger.info(f"[{room}] Rate limited, staying silent")
             return None
 
         # 멘션에서 봇 이름 제거
@@ -133,7 +154,7 @@ async def generate_response(
             if dup:
                 logger.info(f"Duplicate detected (score={dup.score:.2f}): {clean_text[:50]}")
                 response = format_duplicate_response(dup)
-                _record_response()
+                _record_response(room)
                 return response
 
         # 메모리 검색
@@ -158,11 +179,12 @@ async def generate_response(
 
         # LLM 호출
         response = await _call_llm(
-            room, sender, clean_text, memory_context, trigger, expert=expert
+            room, sender, clean_text, memory_context, trigger,
+            expert=expert, effective_model=effective_model,
         )
 
         if response:
-            _record_response()
+            _record_response(room)
 
         return response
 
@@ -173,11 +195,11 @@ async def generate_response(
 
 async def _call_llm(
     room: str, sender: str, text: str, memory_context: str, trigger: str,
-    expert: str | None = None,
+    expert: str | None = None, effective_model: str | None = None,
 ) -> str | None:
     """LLM 호출 (Gemini/OpenAI/Claude Session)."""
     cfg = get_config()
-    model = cfg["llm"]["model"]
+    model = effective_model or cfg["llm"]["model"]
 
     # Claude Code 세션 모드
     if model.startswith("claude/"):
@@ -185,9 +207,9 @@ async def _call_llm(
             room, sender, text, memory_context, trigger, expert
         )
 
-    api_key = get_llm_api_key()
+    api_key = _resolve_api_key(model)
     if not api_key:
-        logger.error("LLM API key not set")
+        logger.error(f"LLM API key not set for model: {model}")
         return None
 
     system_prompt = (

@@ -57,6 +57,16 @@ digest:
 
 target_rooms: []  # 화이트리스트, 비어있으면 모든 방
 
+# v0.5: per-room 설정 오버라이드 (선택사항)
+# rooms:
+#   "AI스터디":
+#     response_mode: "active"
+#     llm_model: "claude/session"
+#   "잡담방":
+#     response_mode: "passive"
+#     llm_model: "gemini/gemini-2.0-flash"
+rooms: {}
+
 logging:
   level: "INFO"
   raw_log_file: "logs/raw_messages.jsonl"  # 모든 raw 메시지 보관

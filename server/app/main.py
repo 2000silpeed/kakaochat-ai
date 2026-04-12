@@ -276,6 +276,41 @@ async def health():
     )
 
 
+@app.post("/auth/register")
+async def register_auth(data: dict):
+    """방에 Claude OAuth 토큰 등록."""
+    from app.auth import register_token
+    room = data.get("room", "")
+    token = data.get("token", "")
+    email = data.get("email", "")
+    if not room or not token:
+        return {"status": "error", "message": "room and token are required"}
+    result = register_token(room, token, email)
+    # 기존 세션이 있으면 새 토큰으로 재시작
+    from app.claude_session import clear_session
+    await clear_session(room)
+    return result
+
+
+@app.delete("/auth/{room}")
+async def remove_auth(room: str):
+    """방의 토큰 삭제."""
+    from app.auth import remove_token
+    removed = remove_token(room)
+    if removed:
+        from app.claude_session import clear_session
+        await clear_session(room)
+        return {"status": "ok", "room": room}
+    return {"status": "not_found", "room": room}
+
+
+@app.get("/auth/rooms")
+async def list_auth_rooms():
+    """등록된 방 목록 조회."""
+    from app.auth import list_rooms
+    return {"status": "ok", "rooms": list_rooms()}
+
+
 @app.get("/sessions")
 async def list_sessions():
     """Claude 세션 상태 조회."""

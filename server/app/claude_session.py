@@ -2,6 +2,7 @@
 import asyncio
 import json
 import logging
+import os
 import uuid
 from pathlib import Path
 
@@ -76,6 +77,16 @@ class ClaudeSession:
             "--permission-mode", "plan",
         ]
 
+        # 방별 OAuth 토큰 주입
+        env = dict(os.environ)
+        from app.auth import get_token
+        token = get_token(self.room)
+        if token:
+            env["CLAUDE_CODE_OAUTH_TOKEN"] = token
+            logger.info(f"Using registered token for '{self.room}'")
+        else:
+            logger.warning(f"No token registered for '{self.room}', using server default auth")
+
         logger.info(f"Starting Claude session for '{self.room}' (id={self.session_id[:8]}...)")
 
         self.process = await asyncio.create_subprocess_exec(
@@ -84,6 +95,7 @@ class ClaudeSession:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=str(self.room_dir.resolve()),
+            env=env,
         )
 
         init_msg = await self._wait_for_init()

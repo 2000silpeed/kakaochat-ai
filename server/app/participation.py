@@ -172,6 +172,15 @@ async def generate_response(
             if memory_lines:
                 memory_context = "\n".join(memory_lines)
 
+        # 링크 아카이브 검색
+        link_context = ""
+        try:
+            from app.link_archive import search_links, format_link_context
+            link_results = search_links(room, clean_text, limit=3)
+            link_context = format_link_context(link_results)
+        except Exception:
+            logger.debug("Link archive search failed (non-fatal)")
+
         # v0.3: 전문가 추천
         expert = None
         if trigger == "question":
@@ -181,6 +190,7 @@ async def generate_response(
         response = await _call_llm(
             room, sender, clean_text, memory_context, trigger,
             expert=expert, effective_model=effective_model,
+            link_context=link_context,
         )
 
         if response:
@@ -196,6 +206,7 @@ async def generate_response(
 async def _call_llm(
     room: str, sender: str, text: str, memory_context: str, trigger: str,
     expert: str | None = None, effective_model: str | None = None,
+    link_context: str = "",
 ) -> str | None:
     """LLM 호출 (Gemini/OpenAI/Claude Session)."""
     cfg = get_config()
@@ -204,7 +215,8 @@ async def _call_llm(
     # Claude Code 세션 모드
     if model.startswith("claude/"):
         return await _call_claude_session(
-            room, sender, text, memory_context, trigger, expert
+            room, sender, text, memory_context, trigger, expert,
+            link_context=link_context,
         )
 
     api_key = _resolve_api_key(model)
@@ -223,6 +235,9 @@ async def _call_llm(
     user_prompt = f"[{room}] {sender}의 메시지: {text}"
     if memory_context:
         user_prompt += f"\n\n관련 기억:\n{memory_context}"
+
+    if link_context:
+        user_prompt += f"\n\n관련 링크:\n{link_context}"
 
     if trigger == "mention":
         user_prompt += "\n\n(너에게 직접 물어본 거야. 답변해줘.)"
@@ -249,6 +264,7 @@ async def _call_llm(
 async def _call_claude_session(
     room: str, sender: str, text: str, memory_context: str,
     trigger: str, expert: str | None = None,
+    link_context: str = "",
 ) -> str | None:
     """Claude Code 세션을 통한 응답 생성."""
     from app.claude_session import get_session
@@ -256,6 +272,8 @@ async def _call_claude_session(
     context_parts = []
     if memory_context:
         context_parts.append(f"관련 기억:\n{memory_context}")
+    if link_context:
+        context_parts.append(f"관련 링크:\n{link_context}")
     if trigger == "mention":
         context_parts.append("(너에게 직접 물어본 거야. 답변해줘.)")
     elif trigger == "question":

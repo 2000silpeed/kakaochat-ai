@@ -129,6 +129,16 @@ async def process_messages():
                     except Exception:
                         logger.exception("Digest signal recording failed (non-fatal)")
 
+                # 링크 아카이브: URL이 포함된 non-noise 메시지
+                if curated.urls:
+                    try:
+                        from app.link_archive import archive_links
+                        await archive_links(
+                            msg.room, msg.sender, curated.urls, msg.ts
+                        )
+                    except Exception:
+                        logger.exception("Link archive failed (non-fatal)")
+
             # /clear 명령 처리 (Claude 세션 모드)
             if msg.text.strip().startswith("/clear"):
                 if effective_model.startswith("claude/"):
@@ -396,6 +406,18 @@ async def update_room_config(room: str, data: dict):
         "room": room,
         "effective_config": new_cfg,
     }
+
+
+# --- 링크 아카이브 API ---
+@app.get("/links/{room}")
+async def get_links(room: str, q: str = "", days: int = 7):
+    """방의 아카이브된 링크 조회. q= 키워드 검색, days= 최근 N일."""
+    from app.link_archive import search_links, get_recent_links
+    if q:
+        links = search_links(room, q, limit=10)
+    else:
+        links = get_recent_links(room, days=days, limit=10)
+    return {"status": "ok", "room": room, "count": len(links), "links": links}
 
 
 @app.post("/digest/{room}")

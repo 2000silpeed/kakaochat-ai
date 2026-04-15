@@ -7,9 +7,11 @@ from app.config import load_config
 if __name__ == "__main__":
     cfg = load_config()
     server = cfg["server"]
+    import sys
+    is_dev = "--dev" in sys.argv
     uvicorn.run(
         "app.main:app",
         host=server["host"],
         port=server["port"],
-        reload=True,
+        reload=is_dev,
     )

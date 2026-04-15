@@ -1,0 +1,16 @@
+services:
+  kakaochat-ai:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    ports:
+      - "8765:8765"
+    volumes:
+      - ./server/data:/app/data
+      - ./server/logs:/app/logs
+      - ./server/config.yaml:/app/config.yaml
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+    restart: unless-stopped

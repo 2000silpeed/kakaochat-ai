@@ -129,6 +129,8 @@ def _resolve_api_key(model: str) -> str:
         return os.environ.get("GEMINI_API_KEY", "")
     if model.startswith("openai/"):
         return os.environ.get("OPENAI_API_KEY", "")
+    if model.startswith("openrouter/"):
+        return os.environ.get("OPENROUTER_API_KEY", "")
     return os.environ.get("LLM_API_KEY", "")
 
 
@@ -256,6 +258,8 @@ async def _call_llm(
         return await _call_gemini(model.removeprefix("gemini/"), messages, api_key, cfg)
     elif model.startswith("openai/"):
         return await _call_openai(model.removeprefix("openai/"), messages, api_key, cfg)
+    elif model.startswith("openrouter/"):
+        return await _call_openrouter(model.removeprefix("openrouter/"), messages, api_key, cfg)
     else:
         logger.error(f"Unsupported LLM model: {model}")
         return None
@@ -314,6 +318,25 @@ async def _call_openai(model: str, messages: list, api_key: str, cfg: dict) -> s
     import openai
 
     client = openai.AsyncOpenAI(api_key=api_key)
+    response = await client.chat.completions.create(
+        model=model,
+        messages=messages,
+        temperature=cfg["llm"]["temperature"],
+        max_tokens=cfg["llm"]["max_tokens"],
+    )
+
+    if response.choices:
+        return response.choices[0].message.content.strip()
+    return None
+
+
+async def _call_openrouter(model: str, messages: list, api_key: str, cfg: dict) -> str | None:
+    import openai
+
+    client = openai.AsyncOpenAI(
+        api_key=api_key,
+        base_url="https://openrouter.ai/api/v1",
+    )
     response = await client.chat.completions.create(
         model=model,
         messages=messages,

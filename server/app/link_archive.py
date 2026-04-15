@@ -103,6 +103,8 @@ async def summarize_content(title: str, body: str, url: str) -> str:
             return await _summarize_gemini(prompt, model, cfg)
         elif model.startswith("openai/"):
             return await _summarize_openai(prompt, model, cfg)
+        elif model.startswith("openrouter/"):
+            return await _summarize_openrouter(prompt, model, cfg)
         elif model.startswith("claude/"):
             return title or url
     except Exception:
@@ -144,6 +146,29 @@ async def _summarize_openai(prompt: str, model: str, cfg: dict) -> str:
     client = openai.AsyncOpenAI(api_key=api_key)
     response = await client.chat.completions.create(
         model=model.removeprefix("openai/"),
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.3,
+        max_tokens=200,
+    )
+    if response.choices:
+        return response.choices[0].message.content.strip()
+    return ""
+
+
+async def _summarize_openrouter(prompt: str, model: str, cfg: dict) -> str:
+    import os
+    import openai
+
+    api_key = os.environ.get("OPENROUTER_API_KEY", "")
+    if not api_key:
+        return ""
+
+    client = openai.AsyncOpenAI(
+        api_key=api_key,
+        base_url="https://openrouter.ai/api/v1",
+    )
+    response = await client.chat.completions.create(
+        model=model.removeprefix("openrouter/"),
         messages=[{"role": "user", "content": prompt}],
         temperature=0.3,
         max_tokens=200,

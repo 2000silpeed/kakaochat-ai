@@ -27,4 +27,6 @@ def get_llm_api_key() -> str:
         return os.environ.get("GEMINI_API_KEY", "")
     if model.startswith("openai/"):
         return os.environ.get("OPENAI_API_KEY", "")
+    if model.startswith("openrouter/"):
+        return os.environ.get("OPENROUTER_API_KEY", "")
     return os.environ.get("LLM_API_KEY", "")

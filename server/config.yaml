@@ -10,7 +10,7 @@ server:
 response_mode: "passive"  # active / passive / off
 
 llm:
-  model: "gemini/gemini-2.0-flash"  # gemini/, openai/, claude/session
+  model: "openrouter/google/gemma-4-31b-it:free"  # openrouter/, gemini/, openai/, claude/session
   temperature: 0.7
   max_tokens: 1024
   claude:  # claude/session 모드 설정
@@ -22,6 +22,7 @@ memory:
   vector_db: "chromadb"
   collection_name: "kakaochat"
   embedding_model: "intfloat/multilingual-e5-large"
+  llm_model: "gemini/gemini-2.0-flash"  # Mem0 내부 LLM (function calling 필수). OPENROUTER_API_KEY 설정 시 openrouter/openai/gpt-oss-20b:free 사용 가능
 
 curator:
   noise_patterns:

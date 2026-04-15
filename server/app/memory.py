@@ -16,17 +16,21 @@ def _build_mem0_config() -> dict:
     mem_cfg = cfg["memory"]
     llm_cfg = cfg["llm"]
 
-    # LLM provider 결정 (litellm 포맷 → mem0 provider 매핑)
-    model = llm_cfg["model"]
-    if model.startswith("gemini/"):
+    # Mem0 내부 LLM (function calling 필수 → 별도 설정 가능)
+    mem0_llm = mem_cfg.get("llm_model", llm_cfg["model"])
+    if mem0_llm.startswith("gemini/"):
         llm_provider = "gemini"
-        llm_model = model.removeprefix("gemini/")
-    elif model.startswith("openai/"):
+        llm_model = mem0_llm.removeprefix("gemini/")
+    elif mem0_llm.startswith("openai/"):
         llm_provider = "openai"
-        llm_model = model.removeprefix("openai/")
+        llm_model = mem0_llm.removeprefix("openai/")
+    elif mem0_llm.startswith("openrouter/"):
+        # Mem0 OpenAI provider가 OPENROUTER_API_KEY 감지 시 자동으로 OpenRouter 사용
+        llm_provider = "openai"
+        llm_model = mem0_llm.removeprefix("openrouter/")
     else:
         llm_provider = "litellm"
-        llm_model = model
+        llm_model = mem0_llm
 
     return {
         "llm": {
